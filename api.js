@@ -6,13 +6,82 @@ module.exports.setupRoutes = (db) => {
   router.get("/users", (req, res) => {
     const { strand_name, section_number, batch_year } = req.query;
 
-    // Modify the SQL query accordingly to filter by strand_name, section_number, and batch_year
-    const sqlQuery = `
-      SELECT * FROM Users
-      WHERE section_number = ? AND batch_year = ?
-    `;
+    if (section_number && batch_year) {
+      const sqlQuery =
+        "SELECT * FROM Users WHERE section_number = ? AND batch_year = ?";
 
-    db.all(sqlQuery, [section_number, batch_year], (err, rows) => {
+      return db.all(sqlQuery, [section_number, batch_year], (err, rows) => {
+        if (err) {
+          console.error(err);
+          res.status(500).json({ error: "Internal Server Error" });
+          return;
+        }
+        res.json(rows);
+      });
+    } else if (section_number) {
+      const sqlQuery = "SELECT * FROM Users WHERE section_number = ?";
+
+      return db.all(sqlQuery, [section_number], (err, rows) => {
+        if (err) {
+          console.error(err);
+          res.status(500).json({ error: "Internal Server Error" });
+          return;
+        }
+        res.json(rows);
+      });
+    } else if (batch_year) {
+      const sqlQuery = "SELECT * FROM Users WHERE batch_year = ?";
+
+      return db.all(sqlQuery, [batch_year], (err, rows) => {
+        if (err) {
+          console.error(err);
+          res.status(500).json({ error: "Internal Server Error" });
+          return;
+        }
+        res.json(rows);
+      });
+    } else {
+      const sqlQuery = "SELECT * FROM Users";
+
+      return db.all(sqlQuery, (err, rows) => {
+        if (err) {
+          console.error(err);
+          res.status(500).json({ error: "Internal Server Error" });
+          return;
+        }
+        res.json(rows);
+      });
+    }
+  });
+
+  router.get("/user-search", (req, res) => {
+    const { strand_name, section_number, batch_year, search } = req.query;
+
+    // Base SQL query
+    let sqlQuery = "SELECT * FROM Users WHERE 1";
+
+    const params = [];
+
+    if (section_number) {
+      sqlQuery += " AND section_number = ?";
+      params.push(section_number);
+    }
+
+    if (batch_year) {
+      sqlQuery += " AND batch_year = ?";
+      params.push(batch_year);
+    }
+
+    // Add conditions for search
+    if (search) {
+      sqlQuery +=
+        " AND (user_fname LIKE ? OR user_lname LIKE ? OR username LIKE ?)";
+      const searchPattern = `%${search}%`;
+      params.push(searchPattern, searchPattern, searchPattern);
+    }
+
+    // Execute the dynamic query
+    db.all(sqlQuery, params, (err, rows) => {
       if (err) {
         console.error(err);
         res.status(500).json({ error: "Internal Server Error" });
@@ -274,20 +343,29 @@ module.exports.setupRoutes = (db) => {
   });
 
   router.post("/batch", async (req, res) => {
-    const { bnumber, year, strand } = req.body;
     try {
-      await db.run(
-        "INSERT INTO Batch (batch_number, batch_year, strand_number) VALUES (?, ?, ?)",
-        [bnumber, year, strand]
-      );
-      res.status(201).json({
-        bnumber,
+      const { year } = req.body;
+
+      // Validate the input data (you may add more validation as needed)
+      if (!year) {
+        return res.status(400).json({ error: "Year is required" });
+      }
+
+      // Insert new batch into the Batch table
+      const result = await db.run("INSERT INTO Batch (batch_year) VALUES (?)", [
         year,
-        strand,
-      });
+      ]);
+
+      if (result.lastID) {
+        return res
+          .status(201)
+          .json({ success: true, batch_number: result.lastID });
+      } else {
+        return res.status(500).json({ error: "Failed to add new batch" });
+      }
     } catch (error) {
-      console.error(error);
-      res.status(500);
+      console.error("Error adding new batch:", error);
+      res.status(500).json({ error: "Internal Server Error" });
     }
   });
 
@@ -300,6 +378,36 @@ module.exports.setupRoutes = (db) => {
       }
       res.json(rows);
     });
+  });
+  router.post("/strand", async (req, res) => {
+    const { strand } = req.body;
+
+    try {
+      // Check if the strand name is provided in the request body
+      if (!strand) {
+        return res.status(400).json({ error: "Strand name is required" });
+      }
+
+      // Insert the new strand into the database
+      const result = await db.run(
+        "INSERT INTO Strand (strand_name) VALUES (?)",
+        [strand]
+      );
+
+      if (result.lastID) {
+        // If the insertion is successful, return success and the strand number
+        return res
+          .status(201)
+          .json({ success: true, strand_number: result.lastID });
+      } else {
+        // If the insertion fails, return an error
+        return res.status(500).json({ error: "Failed to add new strand" });
+      }
+    } catch (error) {
+      // Handle any unexpected errors
+      console.error("Error adding new strand:", error);
+      return res.status(500).json({ error: "Internal Server Error" });
+    }
   });
 
   router.get("/sections", (req, res) => {
