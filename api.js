@@ -73,12 +73,13 @@ module.exports.setupRoutes = (db) => {
     }
 
     // Add conditions for search
-    if (search) {
-      sqlQuery +=
-        " AND (user_fname LIKE ? OR user_lname LIKE ? OR username LIKE ?)";
-      const searchPattern = `%${search}%`;
-      params.push(searchPattern, searchPattern, searchPattern);
+    if (!Boolean(search.trim())) {
+      return res.json([]);
     }
+    sqlQuery +=
+      " AND (user_fname LIKE ? OR user_lname LIKE ? OR username LIKE ?)";
+    const searchPattern = `%${search}%`;
+    params.push(searchPattern, searchPattern, searchPattern);
 
     // Execute the dynamic query
     db.all(sqlQuery, params, (err, rows) => {
@@ -122,7 +123,8 @@ module.exports.setupRoutes = (db) => {
       cnumber,
       username,
       pword,
-      age,
+      address,
+      email,
     } = req.body;
 
     console.log(req.body);
@@ -144,9 +146,10 @@ module.exports.setupRoutes = (db) => {
           section_number, 
           cnumber, 
           username, 
-          password, 
-          age
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          password,
+          address,
+          email
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           userId,
@@ -161,7 +164,8 @@ module.exports.setupRoutes = (db) => {
           cnumber,
           username,
           pword,
-          age,
+          address,
+          email,
         ]
       );
 
@@ -178,12 +182,15 @@ module.exports.setupRoutes = (db) => {
         cnumber,
         username,
         pword,
+        address,
+        email,
       });
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "Internal Server Error" });
     }
   });
+
   router.get("/users/:userId", async (req, res) => {
     const userId = req.params.userId;
 
@@ -205,9 +212,14 @@ module.exports.setupRoutes = (db) => {
           user_fname: userData.user_fname,
           user_lname: userData.user_lname,
           user_mname: userData.user_mname,
-          batch_number: userData.batch_number,
-          strand_number: userData.strand_number,
+          user_suffix: userData.user_suffix,
+          batch_year: userData.batch_year,
+          strand_name: userData.strand_name,
           section_number: userData.section_number,
+          address: userData.address,
+          email: userData.email,
+          contact_number: userData.cnumber,
+          verified: userData.verified,
         };
 
         res.status(200).json(formattedUserData);
@@ -218,22 +230,9 @@ module.exports.setupRoutes = (db) => {
     }
   });
 
-  router.put("/users/:userId", async (req, res) => {
+  router.patch("/users/:userId", async (req, res) => {
     const userId = req.params.userId;
-    const {
-      userType,
-      firstName,
-      lastName,
-      midName,
-      suffix,
-      batch,
-      strand,
-      section,
-      cnumber,
-      username,
-      pword,
-      age,
-    } = req.body;
+    const updateFields = req.body;
 
     try {
       // Check if the user with the given ID exists
@@ -246,40 +245,26 @@ module.exports.setupRoutes = (db) => {
         return res.status(404).json({ error: "User not found" });
       }
 
-      // Perform the update
-      await db.run(
-        `
-        UPDATE Users
-        SET user_type_role = ?,
-            user_fname = ?,
-            user_lname = ?,
-            user_mname = ?,
-            user_suffix = ?,
-            batch_year = ?,
-            strand_name = ?,
-            section_number = ?,
-            cnumber = ?,
-            username = ?,
-            password = ?,
-            age = ?
-        WHERE user_ID = ?
-      `,
-        [
-          userType,
-          firstName,
-          lastName,
-          midName,
-          suffix,
-          batch,
-          strand,
-          section,
-          cnumber,
-          username,
-          pword,
-          age,
-          userId,
-        ]
+      // Filter out undefined values (fields not provided in the request body)
+      const filteredFields = Object.fromEntries(
+        Object.entries(updateFields).filter(
+          ([key, value]) => value !== undefined
+        )
       );
+
+      // If there are no valid fields to update, respond with an error
+      if (Object.keys(filteredFields).length === 0) {
+        return res.status(400).json({ error: "No valid fields to update" });
+      }
+
+      // Build the SET clause dynamically based on the filtered fields
+      const setClause = Object.keys(filteredFields)
+        .map((field) => `${field} = ?`)
+        .join(", ");
+
+      // Perform the update
+      const values = [...Object.values(filteredFields), userId];
+      await db.run(`UPDATE Users SET ${setClause} WHERE user_ID = ?`, values);
 
       // Fetch and return the updated user
       const updatedUser = await db.get(
@@ -346,12 +331,10 @@ module.exports.setupRoutes = (db) => {
     try {
       const { year } = req.body;
 
-      // Validate the input data (you may add more validation as needed)
       if (!year) {
         return res.status(400).json({ error: "Year is required" });
       }
 
-      // Insert new batch into the Batch table
       const result = await db.run("INSERT INTO Batch (batch_year) VALUES (?)", [
         year,
       ]);
@@ -379,32 +362,27 @@ module.exports.setupRoutes = (db) => {
       res.json(rows);
     });
   });
+
   router.post("/strand", async (req, res) => {
     const { strand } = req.body;
 
     try {
-      // Check if the strand name is provided in the request body
       if (!strand) {
         return res.status(400).json({ error: "Strand name is required" });
       }
 
-      // Insert the new strand into the database
       const result = await db.run(
         "INSERT INTO Strand (strand_name) VALUES (?)",
         [strand]
       );
-
       if (result.lastID) {
-        // If the insertion is successful, return success and the strand number
         return res
           .status(201)
           .json({ success: true, strand_number: result.lastID });
       } else {
-        // If the insertion fails, return an error
         return res.status(500).json({ error: "Failed to add new strand" });
       }
     } catch (error) {
-      // Handle any unexpected errors
       console.error("Error adding new strand:", error);
       return res.status(500).json({ error: "Internal Server Error" });
     }
@@ -447,21 +425,6 @@ module.exports.setupRoutes = (db) => {
 
   router.post("/sections", async (req, res) => {
     const { section } = req.body;
-    try {
-      await db.run("INSERT INTO Sections (section_number) VALUES (?)", [
-        section,
-      ]);
-      res.status(201).json({
-        section,
-      });
-    } catch (error) {
-      console.error(error);
-      res.status(500);
-    }
-  });
-
-  router.post("/strands", async (req, res) => {
-    const { strand } = req.body;
     try {
       await db.run("INSERT INTO Sections (section_number) VALUES (?)", [
         section,
