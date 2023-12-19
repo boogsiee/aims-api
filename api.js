@@ -41,7 +41,7 @@ module.exports.setupRoutes = (db) => {
         res.json(rows);
       });
     } else {
-      const sqlQuery = "SELECT * FROM Users";
+      const sqlQuery = "SELECT * FROM Users ORDER BY reg_date DESC";
 
       return db.all(sqlQuery, (err, rows) => {
         if (err) {
@@ -108,6 +108,68 @@ module.exports.setupRoutes = (db) => {
       console.error(error);
       return res.status(500);
     }
+  });
+
+  router.get("/users/count", (_, res) => {
+    db.get("SELECT COUNT(user_ID) AS totalUsers FROM Users", (err, result) => {
+      if (err) {
+        console.error(err);
+        return res
+          .status(500)
+          .json({ error: "Internal Server Error", message: err.message });
+      }
+
+      if (!result || result.totalUsers === undefined) {
+        return res.status(404).json({
+          error: "User not found",
+          message: "No users found in the database",
+        });
+      }
+
+      const totalUsers = result.totalUsers;
+
+      res.json({ totalUsers });
+    });
+  });
+
+  router.get("/verified-users/count", (_, res) => {
+    db.get(
+      "SELECT COUNT(user_ID) AS totalVerifiedUsers FROM Users WHERE verified = 1",
+      (err, result) => {
+        if (err) {
+          console.error(err);
+          return res
+            .status(500)
+            .json({ error: "Internal Server Error", message: err.message });
+        }
+
+        if (!result || result.totalVerifiedUsers === undefined) {
+          return res.status(404).json({
+            error: "Verified users not found",
+            message: "No verified users found in the database",
+          });
+        }
+
+        const totalVerifiedUsers = result.totalVerifiedUsers;
+
+        res.json({ totalVerifiedUsers });
+      }
+    );
+  });
+
+  // New route for fetching user registration data
+  router.get("/user-registration-chart-data", (req, res) => {
+    const sqlQuery =
+      "SELECT reg_date, COUNT(*) as total_users FROM Users GROUP BY reg_date";
+
+    return db.all(sqlQuery, (err, rows) => {
+      if (err) {
+        console.error(err);
+        res.status(500).json({ error: "Internal Server Error" });
+        return;
+      }
+      res.json(rows);
+    });
   });
 
   router.post("/users", async (req, res) => {
@@ -363,6 +425,20 @@ module.exports.setupRoutes = (db) => {
     });
   });
 
+  router.get("/alumna-count-by-strand", (req, res) => {
+    db.all(
+      "SELECT strand_name, COUNT(user_ID) as alumnaCount FROM Users WHERE user_type_role = 'Alumna' GROUP BY strand_name",
+      (err, rows) => {
+        if (err) {
+          console.error(err);
+          res.status(500).json({ error: "Internal Server Error" });
+          return;
+        }
+        res.json(rows);
+      }
+    );
+  });
+
   router.post("/strand", async (req, res) => {
     const { strand } = req.body;
 
@@ -412,15 +488,50 @@ module.exports.setupRoutes = (db) => {
     }
   });
 
-  router.get("/posts", (_, res) => {
-    db.all("SELECT * FROM Posts", (err, rows) => {
-      if (err) {
-        console.error(err);
-        res.status(500).json({ error: "Internal Server Error" });
-        return;
+  router.get("/posts/user/:userId", (req, res) => {
+    const userId = req.params.userId;
+
+    if (!userId) {
+      res.status(400).json({ error: "Invalid user ID parameter" });
+      return;
+    }
+
+    db.all(
+      "SELECT Posts.post_number, Posts.post_type, Posts.supp, Posts.post_content, Posts.date_post, Users.user_fname, Users.user_lname, Users.user_mname, Users.user_suffix, Users.batch_year FROM Posts LEFT JOIN Users ON Posts.user_ID = Users.user_ID WHERE Users.user_ID = ?",
+      [userId],
+      (err, rows) => {
+        if (err) {
+          console.error(err);
+          res.status(500).json({ error: "Internal Server Error" });
+          return;
+        }
+
+        if (rows.length === 0) {
+          res
+            .status(404)
+            .json({ error: "No posts found for the specified user" });
+          return;
+        }
+
+        const user = {
+          user_fname: rows[0].user_fname,
+          user_lname: rows[0].user_lname,
+          user_mname: rows[0].user_mname,
+          user_suffix: rows[0].user_suffix,
+          batch_year: rows[0].batch_year,
+        };
+
+        const posts = rows.map((row) => ({
+          post_number: row.post_number,
+          post_type: row.post_type,
+          supp: row.supp,
+          post_content: row.post_content,
+          date_post: row.date_post,
+        }));
+
+        res.json({ user, posts });
       }
-      res.json(rows);
-    });
+    );
   });
 
   router.post("/sections", async (req, res) => {

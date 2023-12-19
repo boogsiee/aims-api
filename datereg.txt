@@ -1,0 +1,11 @@
+-- database: c:\Users\Workplace\Desktop\aims-api\aims-db.db
+
+-- Use the ▷ button in the top right corner to run the entire file.
+
+CREATE TRIGGER set_default_reg_date
+BEFORE INSERT ON "Users"
+FOR EACH ROW
+WHEN NEW.reg_date IS NULL
+BEGIN
+  UPDATE "Users" SET reg_date = CURRENT_DATE WHERE user_ID = NEW.user_ID;
+END;
