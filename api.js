@@ -53,6 +53,54 @@ module.exports.setupRoutes = (db) => {
       });
     }
   });
+  router.patch("/users/:userId", async (req, res) => {
+    const userId = req.params.userId;
+    const updateFields = req.body;
+
+    try {
+      // Check if the user with the given ID exists
+      const existingUser = await db.get(
+        "SELECT * FROM Users WHERE user_ID = ?",
+        [userId]
+      );
+
+      if (!existingUser) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      // Filter out undefined values (fields not provided in the request body)
+      const filteredFields = Object.fromEntries(
+        Object.entries(updateFields).filter(
+          ([key, value]) => value !== undefined
+        )
+      );
+
+      // If there are no valid fields to update, respond with an error
+      if (Object.keys(filteredFields).length === 0) {
+        return res.status(400).json({ error: "No valid fields to update" });
+      }
+
+      // Build the SET clause dynamically based on the filtered fields
+      const setClause = Object.keys(filteredFields)
+        .map((field) => `${field} = ?`)
+        .join(", ");
+
+      // Perform the update
+      const values = [...Object.values(filteredFields), userId];
+      await db.run(`UPDATE Users SET ${setClause} WHERE user_ID = ?`, values);
+
+      // Fetch and return the updated user
+      const updatedUser = await db.get(
+        "SELECT * FROM Users WHERE user_ID = ?",
+        [userId]
+      );
+
+      res.status(200).json(updatedUser);
+    } catch (error) {
+      console.error("Error updating user:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
 
   router.get("/user-search", (req, res) => {
     const { strand_name, section_number, batch_year, search } = req.query;
@@ -73,13 +121,11 @@ module.exports.setupRoutes = (db) => {
     }
 
     // Add conditions for search
-    if (!Boolean(search.trim())) {
-      return res.json([]);
+    if (search && search.trim() !== "") {
+      sqlQuery += " AND (user_fname LIKE ? OR user_lname LIKE ?)";
+      const searchPattern = `%${search}%`;
+      params.push(searchPattern, searchPattern);
     }
-    sqlQuery +=
-      " AND (user_fname LIKE ? OR user_lname LIKE ? OR username LIKE ?)";
-    const searchPattern = `%${search}%`;
-    params.push(searchPattern, searchPattern, searchPattern);
 
     // Execute the dynamic query
     db.all(sqlQuery, params, (err, rows) => {
@@ -132,9 +178,193 @@ module.exports.setupRoutes = (db) => {
     });
   });
 
+  router.post("/verify/:user_Id", async (req, res) => {
+    try {
+      // Extract data from the request body
+      const { user_Id, uname, pword, contact } = req.body;
+
+      // Insert data into the Verify table
+      const insertQuery = `
+        INSERT INTO Verify (user_Id, uname, pword)
+        VALUES (?, ?, ?)
+      `;
+
+      // Execute the SQL query
+      await db.run(insertQuery, [user_Id, uname, pword]);
+
+      // Send a response back to the client
+      res.status(201).json({
+        message: "Data inserted into Verify table successfully",
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  const bcrypt = require("bcrypt");
+  // Assuming getUserByUserId is a function that retrieves a user by user_ID
+  router.post("/login", async (req, res) => {
+    const { username, pword } = req.body;
+
+    if (!username || !pword) {
+      return res.status(400).json({ error: "Invalid request" });
+    }
+
+    try {
+      // Directly query the Verify table to retrieve user data by username
+      const user = await db.get('SELECT * FROM "Verify" WHERE uname = ?', [
+        username,
+      ]);
+
+      if (user) {
+        // Validate the password against the retrieved user details
+        const passwordMatch = await bcrypt.compare(pword, user.pword);
+
+        if (passwordMatch) {
+          return res.json({ message: "Login successful" });
+        } else {
+          return res.status(401).json({ error: "Invalid credentials" });
+        }
+      } else {
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  router.get("/verify", async (req, res) => {
+    try {
+      // Query to select data from Verify table with corresponding Users data
+      const selectQuery = `
+        SELECT Verify.*, Users.user_fname, Users.user_lname, Users.strand_name, Users.batch_year, Users.section_number
+        FROM Verify
+        JOIN Users ON Verify.user_Id = Users.user_ID
+      `;
+
+      // Execute the SQL query
+      db.all(selectQuery, (err, rows) => {
+        if (err) {
+          console.error(err);
+          res.status(500).json({ error: err.message });
+          return;
+        }
+
+        // Send the retrieved data back to the client
+        res.status(200).json(rows);
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  router.get("/verify-user-stat/:user_Id", async (req, res) => {
+    try {
+      const { user_Id } = req.params;
+
+      // Query to fetch vstat for the specified user_Id
+      const query = "SELECT vstat FROM Verify WHERE user_Id = ?";
+
+      // Execute the SQL query
+      const result = await db.get(query, [user_Id]);
+
+      if (!result) {
+        return res.status(404).json({
+          error: "Verification not found",
+          message: "No verification found for the specified user ID",
+        });
+      }
+
+      // Respond with the vstat value
+      res.json({ vstat: result.vstat });
+    } catch (error) {
+      console.error(error);
+      res
+        .status(500)
+        .json({ error: "Internal Server Error", message: error.message });
+    }
+  });
+
+  router.get("/verify-user/:userId", (req, res) => {
+    const userId = req.params.userId;
+
+    db.get(
+      "SELECT COALESCE(vstat, 0) AS vstat, * FROM Verify WHERE user_Id = ?",
+      [userId],
+      (err, result) => {
+        if (err) {
+          console.error(err);
+          return res
+            .status(500)
+            .json({ error: "Internal Server Error", message: err.message });
+        }
+
+        if (!result) {
+          return res.status(404).json({
+            error: "Verification not found",
+            message: "No verification found for the specified user ID",
+          });
+        }
+
+        res.json(result);
+      }
+    );
+  });
+
+  router.patch("/verify/:user_Id", async (req, res) => {
+    try {
+      const { user_Id } = req.params;
+      const { vstat } = req.body;
+
+      // Check if vstat is provided in the request body
+      if (vstat === undefined) {
+        return res
+          .status(400)
+          .json({ error: "Missing 'vstat' field in the request body" });
+      }
+
+      // Update vstat in the Verify table
+      const updateQuery = `
+        UPDATE Verify
+        SET vstat = ?
+        WHERE user_Id = ?
+      `;
+
+      // Execute the SQL query
+      await db.run(updateQuery, [vstat, user_Id]);
+
+      // Send a response back to the client
+      res.status(200).json({ message: "vstat updated successfully" });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+  router.post("/verify-user/:userId", (req, res) => {
+    const { userId } = req.params;
+    const { uname, pword, contact } = req.body;
+    db.run(
+      "INSERT INTO Verify (user_Id, date_verified, uname, pword, contact, vstat) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?)",
+      [userId, uname, pword, contact],
+      (err) => {
+        if (err) {
+          console.error(err);
+          return res
+            .status(500)
+            .json({ error: "Internal Server Error", message: err.message });
+        }
+
+        res.json({ message: "User verified successfully" });
+      }
+    );
+  });
+
   router.get("/verified-users/count", (_, res) => {
     db.get(
-      "SELECT COUNT(user_ID) AS totalVerifiedUsers FROM Users WHERE verified = 1",
+      "SELECT COUNT(V.user_Id) AS totalVerifiedUsers FROM Verify V INNER JOIN Users U ON V.user_Id = U.user_ID WHERE V.vstat = 1",
       (err, result) => {
         if (err) {
           console.error(err);
@@ -157,21 +387,6 @@ module.exports.setupRoutes = (db) => {
     );
   });
 
-  // New route for fetching user registration data
-  router.get("/user-registration-chart-data", (req, res) => {
-    const sqlQuery =
-      "SELECT reg_date, COUNT(*) as total_users FROM Users GROUP BY reg_date";
-
-    return db.all(sqlQuery, (err, rows) => {
-      if (err) {
-        console.error(err);
-        res.status(500).json({ error: "Internal Server Error" });
-        return;
-      }
-      res.json(rows);
-    });
-  });
-
   router.post("/users", async (req, res) => {
     const {
       userType = "Alumna",
@@ -183,8 +398,6 @@ module.exports.setupRoutes = (db) => {
       strand,
       section,
       cnumber,
-      username,
-      pword,
       address,
       email,
     } = req.body;
@@ -207,11 +420,9 @@ module.exports.setupRoutes = (db) => {
           strand_name, 
           section_number, 
           cnumber, 
-          username, 
-          password,
           address,
           email
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           userId,
@@ -224,8 +435,6 @@ module.exports.setupRoutes = (db) => {
           strand,
           section,
           cnumber,
-          username,
-          pword,
           address,
           email,
         ]
@@ -242,8 +451,6 @@ module.exports.setupRoutes = (db) => {
         strand,
         section,
         cnumber,
-        username,
-        pword,
         address,
         email,
       });
@@ -257,8 +464,8 @@ module.exports.setupRoutes = (db) => {
     const userId = req.params.userId;
 
     try {
-      const getUserQuery = "SELECT * FROM Users WHERE user_Id = ?";
-      db.get(getUserQuery, [String(userId)], function (err, userData) {
+      const getUserQuery = "SELECT * FROM Users WHERE user_ID = ?";
+      db.get(getUserQuery, [userId], function (err, userData) {
         if (err) {
           console.error("Error fetching user data:", err);
           return res.status(500).json({ error: "Internal server error" });
@@ -269,7 +476,7 @@ module.exports.setupRoutes = (db) => {
         }
 
         const formattedUserData = {
-          user_ID: userData.user_Id,
+          user_ID: userData.user_ID,
           user_type_role: userData.user_type_role,
           user_fname: userData.user_fname,
           user_lname: userData.user_lname,
@@ -280,8 +487,7 @@ module.exports.setupRoutes = (db) => {
           section_number: userData.section_number,
           address: userData.address,
           email: userData.email,
-          contact_number: userData.cnumber,
-          verified: userData.verified,
+          cnumber: userData.cnumber,
         };
 
         res.status(200).json(formattedUserData);
@@ -289,55 +495,6 @@ module.exports.setupRoutes = (db) => {
     } catch (error) {
       console.error("Error fetching user data:", error);
       res.status(500).json({ error: "Internal server error" });
-    }
-  });
-
-  router.patch("/users/:userId", async (req, res) => {
-    const userId = req.params.userId;
-    const updateFields = req.body;
-
-    try {
-      // Check if the user with the given ID exists
-      const existingUser = await db.get(
-        "SELECT * FROM Users WHERE user_ID = ?",
-        [userId]
-      );
-
-      if (!existingUser) {
-        return res.status(404).json({ error: "User not found" });
-      }
-
-      // Filter out undefined values (fields not provided in the request body)
-      const filteredFields = Object.fromEntries(
-        Object.entries(updateFields).filter(
-          ([key, value]) => value !== undefined
-        )
-      );
-
-      // If there are no valid fields to update, respond with an error
-      if (Object.keys(filteredFields).length === 0) {
-        return res.status(400).json({ error: "No valid fields to update" });
-      }
-
-      // Build the SET clause dynamically based on the filtered fields
-      const setClause = Object.keys(filteredFields)
-        .map((field) => `${field} = ?`)
-        .join(", ");
-
-      // Perform the update
-      const values = [...Object.values(filteredFields), userId];
-      await db.run(`UPDATE Users SET ${setClause} WHERE user_ID = ?`, values);
-
-      // Fetch and return the updated user
-      const updatedUser = await db.get(
-        "SELECT * FROM Users WHERE user_ID = ?",
-        [userId]
-      );
-
-      res.status(200).json(updatedUser);
-    } catch (error) {
-      console.error("Error updating user:", error);
-      res.status(500).json({ error: "Internal Server Error" });
     }
   });
 
@@ -496,40 +653,158 @@ module.exports.setupRoutes = (db) => {
       return;
     }
 
-    db.all(
-      "SELECT Posts.post_number, Posts.post_type, Posts.supp, Posts.post_content, Posts.date_post, Users.user_fname, Users.user_lname, Users.user_mname, Users.user_suffix, Users.batch_year FROM Posts LEFT JOIN Users ON Posts.user_ID = Users.user_ID WHERE Users.user_ID = ?",
-      [userId],
-      (err, rows) => {
+    const query = `
+      SELECT
+        Posts.post_number,
+        Posts.post_type,
+        Posts.supp,
+        Posts.post_content,
+        Posts.date_post,
+        Users.user_fname,
+        Users.user_lname,
+        Users.user_mname,
+        Users.user_suffix,
+        Users.batch_year
+      FROM
+        Posts
+      LEFT JOIN
+        Users ON Posts.user_ID = Users.user_ID
+      WHERE
+        Users.user_ID = ?`;
+
+    db.all(query, [userId], (err, rows) => {
+      if (err) {
+        console.error(err);
+        res.status(500).json({ error: "Internal Server Error" });
+        return;
+      }
+
+      if (rows.length === 0) {
+        res
+          .status(404)
+          .json({ error: "No posts found for the specified user" });
+        return;
+      }
+
+      const user = {
+        user_fname: rows[0].user_fname,
+        user_lname: rows[0].user_lname,
+        user_mname: rows[0].user_mname,
+        user_suffix: rows[0].user_suffix,
+        batch_year: rows[0].batch_year,
+      };
+
+      const posts = rows.map((row) => ({
+        post_number: row.post_number,
+        post_type: row.post_type,
+        supp: row.supp,
+        post_content: row.post_content,
+        date_post: row.date_post,
+      }));
+
+      try {
+        // Attempt to send JSON response
+        res.json({ user, posts });
+      } catch (jsonError) {
+        console.error(jsonError);
+        res.status(500).json({ error: "Error formatting JSON response" });
+      }
+    });
+  });
+  router.delete("/posts/:postNumber", async (req, res) => {
+    const postNumber = req.params.postNumber;
+
+    if (!postNumber) {
+      res.status(400).json({ error: "Invalid post number parameter" });
+      return;
+    }
+
+    const query = `
+      DELETE FROM Posts
+      WHERE post_number = ?`;
+
+    db.run(query, [postNumber], function (err) {
+      if (err) {
+        console.error(err);
+        res.status(500).json({ error: "Internal Server Error" });
+        return;
+      }
+
+      if (this.changes === 0) {
+        res.status(404).json({ error: "Post not found" });
+      } else {
+        res.json({ success: true, message: "Post deleted successfully" });
+      }
+    });
+  });
+
+  router.get("/posts", (req, res) => {
+    // Fetch all posts
+    const query = `
+      SELECT Posts.post_number, Posts.post_type, Posts.supp, Posts.post_content, Posts.date_post, Users.user_fname, Users.user_lname, Users.user_mname, Users.user_suffix, Users.batch_year
+      FROM Posts
+      LEFT JOIN Users ON Posts.user_ID = Users.user_ID
+    `;
+
+    db.all(query, (err, rows) => {
+      if (err) {
+        console.error(err);
+        res.status(500).json({ error: "Internal Server Error" });
+        return;
+      }
+
+      if (rows.length === 0) {
+        res.status(404).json({ error: "No posts found" });
+        return;
+      }
+
+      const posts = rows.map((row) => ({
+        post_number: row.post_number,
+        post_type: row.post_type,
+        supp: row.supp,
+        post_content: row.post_content,
+        date_post: new Date(row.date_post).toLocaleDateString("en-US", {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        }),
+        user: {
+          user_fname: row.user_fname,
+          user_lname: row.user_lname,
+          user_mname: row.user_mname,
+          user_suffix: row.user_suffix,
+          batch_year: row.batch_year,
+        },
+      }));
+
+      res.json({ posts });
+    });
+  });
+
+  router.post("/posts/user/:userId", (req, res) => {
+    const userId = req.params.userId;
+    const { post_content } = req.body;
+
+    if (!userId || !post_content) {
+      res.status(400).json({ error: "Invalid request parameters" });
+      return;
+    }
+
+    const date_post = new Date().toISOString(); // You may want to customize the date format based on your requirements
+
+    db.run(
+      "INSERT INTO Posts (user_ID, post_type, post_content, date_post) VALUES (?, ?, ?, ?)",
+      [userId, "Social", post_content, date_post], // Set post_type to "Social" by default
+      function (err) {
         if (err) {
           console.error(err);
           res.status(500).json({ error: "Internal Server Error" });
           return;
         }
 
-        if (rows.length === 0) {
-          res
-            .status(404)
-            .json({ error: "No posts found for the specified user" });
-          return;
-        }
+        const postNumber = this.lastID;
 
-        const user = {
-          user_fname: rows[0].user_fname,
-          user_lname: rows[0].user_lname,
-          user_mname: rows[0].user_mname,
-          user_suffix: rows[0].user_suffix,
-          batch_year: rows[0].batch_year,
-        };
-
-        const posts = rows.map((row) => ({
-          post_number: row.post_number,
-          post_type: row.post_type,
-          supp: row.supp,
-          post_content: row.post_content,
-          date_post: row.date_post,
-        }));
-
-        res.json({ user, posts });
+        res.json({ post_number: postNumber, date_post });
       }
     );
   });
@@ -547,28 +822,6 @@ module.exports.setupRoutes = (db) => {
       console.error(error);
       res.status(500);
     }
-  });
-
-  router.get("/image-attributes", (req, res) => {
-    db.all("SELECT * FROM ImageAttributes", (err, rows) => {
-      if (err) {
-        console.error(err);
-        res.status(500).json({ error: "Internal Server Error" });
-        return;
-      }
-      res.json(rows);
-    });
-  });
-
-  router.get("/images", (req, res) => {
-    db.all("SELECT * FROM Images", (err, rows) => {
-      if (err) {
-        console.error(err);
-        res.status(500).json({ error: "Internal Server Error" });
-        return;
-      }
-      res.json(rows);
-    });
   });
 
   return router;
